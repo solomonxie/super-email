@@ -1,9 +1,8 @@
 # super-email — Design
 
 Personal serverless backend, in Go, that turns email into a command
-interface for digests, a blog, and a notes/links inbox. Built to practice
-Go: Lambda handlers, S3, EventBridge, and Terraform, running on
-self-built container images rather than the zip runtime.
+interface for digests and a notes/links inbox. Built to practice Go:
+Lambda handlers, S3, EventBridge, and Terraform.
 
 ## 1. Goals
 
@@ -12,10 +11,12 @@ self-built container images rather than the zip runtime.
   provider — Gmail, Outlook, iCloud, whatever.
 - Four scheduled digests: Bible reading, YouTube, Facebook/Instagram,
   Substack refresher.
-- A blog: create/edit/delete/display posts.
 - A notes/links inbox: capture, edit, delete.
-- Everything storable in S3. Infra fully in Terraform. Lambdas run from
-  container images I build and push to ECR.
+- Everything storable in S3. Infra fully in Terraform. Lambdas deploy as
+  a Go binary zipped and uploaded directly — no Docker, no container
+  registry.
+- No public HTTP surface at all — email in, email out, nothing to
+  provision an API Gateway for.
 - Optimize for "learn Go idioms" over "minimum services used" — but
   don't add a service without a job.
 
@@ -29,7 +30,7 @@ flowchart LR
         SESrx -->|invoke| Router[Lambda: email-router]
     end
 
-    Router -->|parse command| Store[(S3: blogs/, notes/)]
+    Router -->|parse command| Store[(S3: notes/)]
     Router -->|reply| SEStx[SES sending]
     SEStx --> ME
 
@@ -45,20 +46,15 @@ flowchart LR
     DSub -.->|RSS/HTML| Substack[Substack feeds]
     DBible -.->|API| BibleAPI[Bible API]
 
-    subgraph Blog site
-        APIGW[API Gateway HTTP API] --> BlogAPI[Lambda: blog-api]
-        BlogAPI --> Store
-        Reader[Browser] --> APIGW
-    end
-
     SSM[(SSM Parameter Store\nsecrets/config)] -.-> Router
     SSM -.-> DYT
     SSM -.-> DSocial
     SSM -.-> DSub
 ```
 
-Every Lambda is a separate container image (its own `cmd/` binary), same
-ECR repo family, versioned by image tag. No shared "fat" function.
+Every Lambda is its own `cmd/` binary, deployed independently as a zip
+package. No shared "fat" function, no API Gateway, no public endpoint —
+the only way in or out is email.
 
 ## 3. Inbound email
 
@@ -75,9 +71,8 @@ there). *I* still send from Gmail/Outlook/whatever; only the receiving
 address lives on SES.
 
 Flow:
-1. SES receipt rule on `me@inbox.mydomain.com` (and maybe
-   `blog@…`, `note@…` as friendlier aliases — same rule, routing by
-   recipient).
+1. SES receipt rule on `me@inbox.mydomain.com` (and `note@…` as a
+   friendlier alias — same rule, routing by recipient).
 2. Rule action: store raw MIME in `s3://<bucket>/raw-inbox/<message-id>`,
    then invoke `email-router` Lambda with the S3 location (SES's
    Lambda action gives the mail object in the event, avoiding a second
@@ -89,9 +84,9 @@ Flow:
      is dropped and logged, no reply sent.
    - Parses MIME (Go: `net/mail` + `mime/multipart`) — subject, plain
      text/HTML body, links found in the body.
-   - Routes by command grammar (§5) to blog or notes handler.
-   - Sends a reply via SES (confirmation + link, or error) to the
-     original sender.
+   - Routes by command grammar (§5) to the notes handler.
+   - Sends a reply via SES (confirmation, or error) to the original
+     sender.
 
 Outbound (digests + replies) uses the same SES identity, sending
 domain verified + DKIM configured via Terraform (`aws_ses_domain_identity`,
@@ -105,9 +100,6 @@ scale, and it keeps the Terraform/IAM surface small. Layout:
 ```
 s3://super-email-data/
   raw-inbox/<message-id>.eml          # raw MIME, TTL'd via lifecycle rule (30d)
-  blogs/
-    posts/<slug>.json                 # {id, slug, title, body_md, tags, status, created_at, updated_at}
-    index.json                        # [{slug, title, status, updated_at}, ...] sorted by updated_at desc
   notes/
     items/<id>.json                   # {id, type: note|link, content, url?, tags, created_at}
     index.json                        # [{id, type, summary, created_at}, ...]
@@ -117,15 +109,14 @@ s3://super-email-data/
 ```
 
 Each write (create/edit/delete) rewrites the affected item object *and*
-the relevant `index.json` in the same handler call — not a queue, not
+`notes/index.json` in the same handler call — not a queue, not
 eventual consistency. S3 offers no multi-object transactions, so
 concurrent writers could race, but there's only one writer (me, via
 email) so this is fine. `index.json` is small enough to read-modify-write
-whole; if it gets unwieldy, revisit (see §9).
+whole; if it gets unwieldy, revisit (see §10).
 
-IDs: content-addressed-ish — `slug` for blogs (slugified title,
-de-duplicated with a numeric suffix on collision), ULID for notes (sortable,
-no clock sync issues).
+IDs: ULID per note (sortable, no clock sync issues, no slug collisions
+to worry about).
 
 ## 5. Email command grammar
 
@@ -133,26 +124,21 @@ Subject-line driven, case-insensitive prefix match, body is the payload:
 
 | Subject prefix              | Action                                   | Body                     |
 |------------------------------|-------------------------------------------|--------------------------|
-| `blog new: <title>`          | create post, status=draft                | markdown body            |
-| `blog publish: <slug>`       | flip status draft→published              | (ignored)                |
-| `blog edit: <slug>`          | replace body                             | new markdown body        |
-| `blog delete: <slug>`        | delete post + index entry                | (ignored)                |
 | `note: <anything>`           | new note; if body/subject is a bare URL, `type=link` | text or nothing |
 | `note edit: <id>`            | replace content                          | new text                 |
 | `note delete: <id>`          | delete note                              | (ignored)                |
 | *(no recognized prefix)*     | default: treat whole mail as a new note  | subject+body captured    |
 
-Reply always confirms: `"Created blog post 'my-title' → https://blog.mydomain.com/my-title"`
-or an error explaining the parse failure. This makes the router
-forgiving — an unrecognized command becomes a note instead of silently
-failing, since "capture everything" is the fallback goal of a
-send-yourself-stuff inbox.
+Reply always confirms: `"Saved note <id>"` or an error explaining the
+parse failure. This makes the router forgiving — an unrecognized
+command becomes a note instead of silently failing, since "capture
+everything" is the fallback goal of a send-yourself-stuff inbox.
 
 ## 6. Digest pipelines
 
-One Lambda per digest (separate container images, separate EventBridge
-Scheduler cron rules), sharing an `internal/digest` package for the
-"fetch → render text/HTML → send via SES" skeleton. Per-source notes:
+One Lambda per digest, separate EventBridge Scheduler cron rules,
+sharing an `internal/digest` package for the "fetch → render text/HTML
+→ send via SES" skeleton. Per-source notes:
 
 - **Bible read** — `internal/providers/bible`, e.g. bible-api.com (free,
   no key). State in `digest-state/bible-progress.json` tracks a
@@ -180,34 +166,16 @@ Scheduler cron rules), sharing an `internal/digest` package for the
   not-recently-sent post per run, tracked in
   `digest-state/substack-seen.json`.
 
-## 7. Blog subsystem
+## 7. Notes/links subsystem
 
-`blog-api` Lambda behind API Gateway (HTTP API, cheaper than REST API).
-Two responsibilities in one function for now (split later if it grows):
+No HTTP surface, period — email is the only interface (capture via
+plain send, edit/delete via the `note edit:`/`note delete:` commands,
+§5). Listing/searching notes, if wanted later, means grepping S3
+directly (console or CLI) — no API Gateway, no Lambda, to keep the
+whole project's attack surface at "an inbox," not "an inbox plus a
+website."
 
-- **Write path**: not exposed over HTTP at all in v1 — creation/edit/
-  delete only happens via email (§5). Keeps the public API surface
-  read-only and avoids needing auth on API Gateway for v1.
-- **Read path**: `GET /` (index, published only), `GET /{slug}`
-  (single post, markdown rendered to HTML server-side —
-  `github.com/yuin/goldmark` is a reasonable Go choice). Drafts are
-  never served over HTTP, only visible via the email reply link's
-  slug if I fetch them a different way (or just don't — drafts stay
-  S3-only until published).
-
-No CloudFront/custom domain in v1 — API Gateway's default endpoint is
-enough to read from a browser; add a custom domain + CloudFront later
-if it needs to feel like a "real" public blog.
-
-## 8. Notes/links subsystem
-
-No HTTP surface in v1 — email is the only interface (capture via plain
-send, edit/delete via the `note edit:`/`note delete:` commands, §5).
-Listing/searching notes, if wanted later, is a `notes-api` Lambda
-mirroring blog-api's read path — deferred until it's actually painful
-to grep S3 by hand.
-
-## 9. Go project layout
+## 8. Go project layout
 
 ```
 /cmd
@@ -216,36 +184,33 @@ to grep S3 by hand.
   digest-youtube/
   digest-social/       (Facebook + Instagram together)
   digest-substack/
-  blog-api/            API Gateway entrypoint
 /internal
   email/               MIME parsing, SES send helpers, command grammar parser
-  store/                S3-backed repositories: BlogStore, NoteStore, DigestStateStore
+  store/                S3-backed repositories: NoteStore, DigestStateStore
   digest/               shared "fetch → render → send" skeleton + email templates
   providers/
     bible/
     youtube/
     meta/
     substack/
-  model/                Blog, Note, Digest types
+  model/                Note, Digest types
   config/               env var + SSM parameter loading
 /terraform
   modules/
-    lambda-container/   generic module: ECR repo + Lambda from image URI + IAM role
-    ses/                 domain identity, DKIM, receipt rule set, MAIL FROM
-    s3/
-    eventbridge/         scheduler rules → Lambda targets
-    apigateway/
+    lambda-go/          generic module: go build → zip → Lambda + IAM role
+    ses-inbound/          domain identity, DKIM, receipt rule set, MAIL FROM
+    s3-data/
+    scheduler/            EventBridge Scheduler rules → Lambda targets
   envs/
     prod/
-Dockerfile               single multi-stage Dockerfile, ARG CMD selects which /cmd/* to build
 ```
 
-One shared `Dockerfile` with a build arg (`docker build --build-arg
-CMD=email-router`) rather than five near-duplicate Dockerfiles — each
-Lambda still gets its own ECR repo/image tag from Terraform, just built
-from the same recipe.
+Each Lambda is `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build` into a
+`bootstrap` binary, zipped, and uploaded straight to Lambda — no
+Dockerfile, no ECR repo, no registry login. Terraform runs the build
+itself (`terraform/modules/lambda-go`, §9).
 
-## 10. Infra & security notes
+## 9. Infra & security notes
 
 - **Secrets/config**: SSM Parameter Store (`SecureString` for tokens),
   not Secrets Manager — free, and rotation isn't automatable here
@@ -254,8 +219,8 @@ from the same recipe.
   token, Substack publication list.
 - **IAM**: one role per Lambda, least privilege — e.g. `email-router`
   gets `s3:GetObject` on `raw-inbox/*` + `s3:PutObject/GetObject` on
-  `blogs/*` and `notes/*`, `ses:SendEmail`; `digest-youtube` gets no S3
-  blog/note access at all, just `digest-state/*` + `ses:SendEmail`.
+  `notes/*`, `ses:SendEmail`; `digest-youtube` gets no notes access at
+  all, just `digest-state/*` + `ses:SendEmail`.
 - **Abuse guard**: SES receipt rule scoped to specific recipient
   addresses only; router double-checks `From` against the allow-list
   before doing anything. Everything else is dropped, not bounced (don't
@@ -264,11 +229,14 @@ from the same recipe.
   Lambda ships these to CloudWatch automatically. A CloudWatch alarm on
   any Lambda's `Errors` metric → SNS → email, so failures surface
   without polling logs.
-- **Container images**: multi-stage build, `FROM public.ecr.aws/lambda/provider-al2023`
-  as the runtime base, static Go binary copied in — avoids CGO/musl
-  headaches and is the standard pattern for Go-on-Lambda-containers.
+- **Deployment**: `provided.al2023` custom runtime, one static
+  `bootstrap` binary per function, zipped and uploaded by Terraform
+  (`aws_lambda_function` + `archive_file`, `terraform/modules/lambda-go`)
+  — no Docker, no ECR, no image builds. Cross-compiling for
+  `linux/arm64` from any dev machine is just a Go env var, so this also
+  sidesteps any host-architecture build concerns.
 
-## 11. Open questions / deferred
+## 10. Open questions / deferred
 
 - DynamoDB migration path if S3 index-file writes ever race or the
   index grows past comfortable read-modify-write size (not expected at
@@ -276,19 +244,14 @@ from the same recipe.
   should stay swappable).
 - Meta token refresh automation — likely stays manual (calendar
   reminder) unless a clean unattended refresh flow exists.
-- Whether blog gets a custom domain/CloudFront, or stays on the raw API
-  Gateway URL.
-- Whether notes get a read API, or S3 console browsing is good enough.
 
-## 12. Suggested build order
+## 11. Suggested build order
 
 1. Terraform bootstrap: S3 bucket, SES domain identity + DKIM (this has
    DNS propagation lag — start it first).
-2. `email-router` + SES receipt rule + `store` package (blog/notes
-   S3 repos) + command grammar. Prove the full inbound loop with a
-   dumb "note" fallback before building blog commands.
-3. `blog-api` read path, since it reuses `store` and gives something
-   visible quickly.
-4. One digest end-to-end (Bible — simplest API, no auth) to prove the
+2. `email-router` + SES receipt rule + `store` package (notes S3
+   repo) + command grammar. Prove the full inbound loop with the "note"
+   fallback first.
+3. One digest end-to-end (Bible — simplest API, no auth) to prove the
    EventBridge → Lambda → SES send path, then repeat for YouTube,
    Substack, Meta in roughly that order of API friction.

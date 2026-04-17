@@ -1,0 +1,17 @@
+# Go
+/bin/
+*.test
+/.build/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform/envs/*/terraform.tfvars
+crash.log
+crash.*.log
+
+# Local env
+.env
+.DS_Store
