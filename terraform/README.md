@@ -71,6 +71,50 @@ Every `cmd/*` currently builds to a "hello world" placeholder handler
 stands up real infrastructure end-to-end so Go development can happen
 against it from the start, without a separate "wire up AWS" pass later.
 
+## Go build model
+
+One Go module (`go.mod`) for the whole repo; each `cmd/<name>/main.go`
+is its own `package main` — the standard layout for building several
+independent binaries from one module. `go build ./cmd/email-router`
+builds only that binary. There's no `lib/`/`internal/` yet — once
+shared code exists it's a plain importable package outside `cmd/`
+(e.g. `lib/parser`, imported as
+`github.com/solomonxie/super-email/lib/parser`); it needs no deploy
+step of its own, since Go's linker keeps only what each binary
+actually imports — five Lambdas sharing one `lib/` package still
+produce five independent `bootstrap` binaries.
+
+Three different "entry points" are involved, at three different layers:
+
+1. **OS process entry** — `func main()` in each `cmd/<name>/main.go`,
+   ordinary Go.
+2. **Lambda's Go-level entry, decided by the `aws-lambda-go` library**
+   — `lambda.Start(handler)` called inside `main()` is what makes
+   `handler` *the* Lambda entry point: it opens the AWS Lambda Runtime
+   API polling loop and dispatches each invocation's event to whatever
+   function was passed in. This is the library's doing, not Terraform's
+   or AWS's — nothing outside the Go binary knows or cares which
+   function `handler` is; the binary just presents itself to AWS as one
+   opaque process.
+3. **AWS's entry into the zip is separate, and *not* decided by
+   `aws-lambda-go`** — `modules/lambda-go/main.tf` builds
+   `GOOS=linux GOARCH=<arch> go build -o bootstrap ./cmd/<name>` and
+   zips just that file. `runtime = "provided.al2023"` is AWS's
+   "bring-your-own-runtime" option (no interpreter baked in), and for
+   any `provided`/`provided.al2023` runtime AWS *always* execs the
+   file literally named `bootstrap` at the zip's root, before any Go
+   code — including `aws-lambda-go` — has run. That's a platform
+   convention enforced by the Lambda execution environment itself,
+   which is why the build's `-o` is hardcoded to that name. The
+   `handler = "bootstrap"` attribute on `aws_lambda_function.this` is
+   required by the resource schema, but its value is otherwise unused
+   here — `lambda.Start()` always serves whichever Go function it was
+   given, regardless of the `_HANDLER` env var AWS sets from it.
+
+So the real call chain is: AWS execs `bootstrap` → Go's `main()` runs
+→ `lambda.Start(handler)` opens the runtime loop and calls `handler`
+per invocation.
+
 ## Notes
 
 - No CloudWatch alarms/SNS yet (DESIGN.md §9 mentions them as a
