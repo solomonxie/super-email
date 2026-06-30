@@ -1,5 +1,5 @@
 // Command digest-bible sends the daily Bible reading digest. Triggered
-// by an EventBridge Scheduler cron rule. See DESIGN.md §6. Placeholder
+// by an EventBridge Scheduler cron rule. See DESIGN.md. Placeholder
 // until the reading-plan and SES send logic land.
 package main
 

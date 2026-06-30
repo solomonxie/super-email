@@ -2,7 +2,7 @@
 # Depended on by: ses.tf, scheduler.tf (each reads module.lambdas["<name>"]
 #   outputs for the function it wires up).
 #
-# local.lambda_configs describes the 5 functions from DESIGN.md §8; the
+# local.lambda_configs describes the 5 functions from DESIGN.md; the
 # `lambdas` module below fans them all out through modules/lambda-go via
 # for_each, one IAM role + zip-deployed Lambda each (no ECR, no Docker).
 
