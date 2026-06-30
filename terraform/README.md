@@ -64,7 +64,7 @@ terraform apply
 
 Or, from the repo root, `make init` / `make deploy` / `make destroy` —
 see the [Makefile](../Makefile) for these and other common commands
-(`build`, `test`, `fmt`, `logs-<lambda-name>`).
+(`build`, `test`, `logs-<lambda-name>`).
 
 Every `cmd/*` currently builds to a "hello world" placeholder handler
 (see [../DESIGN.md](../DESIGN.md#11-suggested-build-order)) — `apply`
@@ -115,9 +115,65 @@ So the real call chain is: AWS execs `bootstrap` → Go's `main()` runs
 → `lambda.Start(handler)` opens the runtime loop and calls `handler`
 per invocation.
 
+## Redeploying on a code-only change
+
+There's no separate "push code" step — `terraform apply` rebuilds and
+redeploys any Lambda whose Go source changed, even when no `.tf` file
+changed at all. Two different sha comparisons make that work, one
+purely local and one sourced from AWS:
+
+```
+terraform apply   (per Lambda, modules/lambda-go/main.tf)
+
+ cmd/<name>/**/*.go, go.mod
+        │  filesha256() per file → sha1(join(...)) = source_sha
+        ▼
+ null_resource.build.triggers{gomod_sha, source_sha}
+        │  compared against the same triggers saved in .tfstate
+        │  from the last apply — local vs. state, no AWS call
+        ▼
+ changed? ──no──▶ skip rebuild, jump to the compare step below
+        │ yes
+        ▼
+ local-exec: go build -o .build/<name>/bootstrap ./cmd/<name>
+        ▼
+ data.archive_file.this        (depends_on null_resource.build)
+   zips bootstrap → .build/<name>/function.zip
+   .output_base64sha256 = "planned" source_code_hash
+        │
+        │                    ┌─ AWS API: lambda:GetFunction ──────┐
+        │                    │  called during Terraform's refresh │
+        │                    │  (before every plan)                │
+        │                    ▼                                     │
+        │        .CodeSha256 of what's ACTUALLY deployed right now │
+        │        → written into state as "prior" source_code_hash  │
+        ▼                    ▼                                     │
+ compare: planned (local zip hash)  vs.  prior (AWS-reported hash) ◀┘
+        │
+ equal? ──yes──▶ no diff — plan is a no-op for this Lambda
+        │ no
+        ▼
+ aws_lambda_function.this  → plan: ~ update in-place (source_code_hash
+        │                     only — role, log group, etc. untouched)
+        ▼ (on apply)
+ AWS API: lambda:UpdateFunctionCode(function.zip)
+```
+
+- **`source_sha` / `gomod_sha`** (top) decide *whether to rebuild at
+  all* — a pure local-file-hash-vs-Terraform-state comparison, no AWS
+  involved. This is what makes `go build` skip when nothing changed.
+- **`source_code_hash`** (bottom) decides *whether AWS needs updating*
+  — Terraform refreshes it from AWS (`lambda:GetFunction`'s
+  `CodeSha256`) before every plan, so the comparison is always against
+  what's truly deployed, not just what Terraform last remembers. This
+  also means drift (e.g. someone hand-edited the function in the AWS
+  Console) gets detected and overwritten back to match local source on
+  the next `apply` — Terraform doesn't distinguish "drift" from "you
+  changed the code," it just reconciles AWS's state to match config.
+
 ## Notes
 
-- No CloudWatch alarms/SNS yet (DESIGN.md §9 mentions them as a
+- No CloudWatch alarms/SNS yet (DESIGN.md mentions them as a
   follow-up) — errors are visible in each Lambda's CloudWatch Logs
   group for now.
 - Each Lambda's `bootstrap` binary and `function.zip` land in

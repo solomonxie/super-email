@@ -6,7 +6,7 @@
 #   ├─ public access block, SSE, versioning  (hardening)
 #   └─ lifecycle rules: expire raw-inbox/ after 30d, prune old versions after 90d
 #
-# Single bucket, prefix-partitioned per DESIGN.md §4 — no per-feature
+# Single bucket, prefix-partitioned per DESIGN.md — no per-feature
 # buckets, keeps IAM/lifecycle rules in one place.
 
 resource "aws_s3_bucket" "data" {

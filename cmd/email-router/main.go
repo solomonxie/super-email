@@ -1,6 +1,6 @@
 // Command email-router is invoked by the SES receipt rule for inbound
 // mail. It will parse the raw MIME message SES drops in S3, verify the
-// sender, route note commands, and reply — see DESIGN.md §3, §5.
+// sender, route note commands, and reply — see DESIGN.md.
 // Placeholder until that logic lands.
 package main
 
