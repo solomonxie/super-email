@@ -1,6 +1,6 @@
 // Command digest-substack sends the Substack "old post" refresher
 // digest. Triggered by an EventBridge Scheduler cron rule. See
-// DESIGN.md §6. Placeholder until the feed/sitemap crawl lands.
+// DESIGN.md. Placeholder until the feed/sitemap crawl lands.
 package main
 
 import (

@@ -84,7 +84,7 @@ Flow:
      is dropped and logged, no reply sent.
    - Parses MIME (Go: `net/mail` + `mime/multipart`) — subject, plain
      text/HTML body, links found in the body.
-   - Routes by command grammar (§5) to the notes handler.
+   - Routes by command grammar to the notes handler.
    - Sends a reply via SES (confirmation, or error) to the original
      sender.
 
@@ -113,7 +113,7 @@ Each write (create/edit/delete) rewrites the affected item object *and*
 eventual consistency. S3 offers no multi-object transactions, so
 concurrent writers could race, but there's only one writer (me, via
 email) so this is fine. `index.json` is small enough to read-modify-write
-whole; if it gets unwieldy, revisit (see §10).
+whole; if it gets unwieldy, revisit.
 
 IDs: ULID per note (sortable, no clock sync issues, no slug collisions
 to worry about).
@@ -169,8 +169,8 @@ sharing an `internal/digest` package for the "fetch → render text/HTML
 ## 7. Notes/links subsystem
 
 No HTTP surface, period — email is the only interface (capture via
-plain send, edit/delete via the `note edit:`/`note delete:` commands,
-§5). Listing/searching notes, if wanted later, means grepping S3
+plain send, edit/delete via the `note edit:`/`note delete:` commands).
+Listing/searching notes, if wanted later, means grepping S3
 directly (console or CLI) — no API Gateway, no Lambda, to keep the
 whole project's attack surface at "an inbox," not "an inbox plus a
 website."
@@ -208,7 +208,7 @@ website."
 Each Lambda is `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build` into a
 `bootstrap` binary, zipped, and uploaded straight to Lambda — no
 Dockerfile, no ECR repo, no registry login. Terraform runs the build
-itself (`terraform/modules/lambda-go`, §9).
+itself (`terraform/modules/lambda-go`).
 
 ## 9. Infra & security notes
 

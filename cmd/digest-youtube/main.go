@@ -1,5 +1,5 @@
 // Command digest-youtube sends the daily YouTube uploads digest.
-// Triggered by an EventBridge Scheduler cron rule. See DESIGN.md §6.
+// Triggered by an EventBridge Scheduler cron rule. See DESIGN.md.
 // Placeholder until the YouTube Data API integration lands.
 package main
 

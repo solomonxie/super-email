@@ -1,5 +1,5 @@
 // Command digest-social sends the daily Facebook/Instagram digest.
-// Triggered by an EventBridge Scheduler cron rule. See DESIGN.md §6.
+// Triggered by an EventBridge Scheduler cron rule. See DESIGN.md.
 // Placeholder until the Meta Graph API integration lands.
 package main
 
