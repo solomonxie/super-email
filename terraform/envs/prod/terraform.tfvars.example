@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+
+project_name = "super-email"
+aws_region   = "us-east-1"
+
+data_bucket_name = "super-email-data" # must be globally unique
+
+ses_domain      = "inbox.example.com" # a domain/subdomain you control
+route53_zone_id = null                # set if that domain's zone is in this AWS account
+
+allowed_sender_email = "you@gmail.com" # the only address email-router will act on
