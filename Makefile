@@ -28,11 +28,6 @@ test:
 tidy:
 	go mod tidy
 
-fmt:
-	go fmt ./...
-	terraform fmt -recursive terraform
-
-
 # make logs-email-router / logs-digest-bible / ...
 logs-%:
 	aws logs tail /aws/lambda/${PROJECT_NAME}-$* --follow --region ${AWS_REGION}

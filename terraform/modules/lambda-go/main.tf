@@ -13,7 +13,7 @@
 #                                         runtime = provided.al2023)
 #
 # One IAM role + one Lambda per module instance, so IAM stays
-# least-privilege per function (DESIGN.md §9) instead of one shared fat
+# least-privilege per function (per DESIGN.md) instead of one shared fat
 # role. No Docker/ECR: each function is a single static `bootstrap`
 # binary, cross-compiled and zipped locally.
 

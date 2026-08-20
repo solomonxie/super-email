@@ -11,7 +11,7 @@
 # aws_ses_receipt_rule_set/rule       (recipients → s3_action, then lambda_action)
 # aws_lambda_permission.ses_invoke    (resource policy: SES may invoke the router)
 #
-# DESIGN.md §3: receiving lives on an owned domain via SES; sending
+# DESIGN.md: receiving lives on an owned domain via SES; sending
 # (from any provider) is untouched — only inbound is AWS-native here.
 
 resource "aws_ses_domain_identity" "this" {

@@ -32,7 +32,7 @@ Body:    https://example.com/some-article
 No recognized command? The email is just saved as a note — nothing is
 ever silently dropped.
 
-Full command reference lives in [DESIGN.md § Email command grammar](./DESIGN.md#5-email-command-grammar).
+Full command reference lives in [DESIGN.md: Email command grammar](./DESIGN.md#5-email-command-grammar).
 
 ## Under the hood
 
