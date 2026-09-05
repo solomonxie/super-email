@@ -18,8 +18,8 @@ real task. That's Phase 1.
       `cmd/README.md`, `terraform/README.md` — depends: T0.1, T1.2
 
 ## Phase 1: Bare agent loop (stub execution, no mail/tasks yet)
-- [ ] T1.1 `deploy/docker-compose.yml`: Postgres + Temporal +
-      Temporal UI only (no MinIO yet — nothing needs blobs at this
+- [ ] T1.1 `deploy/docker-compose.yml`: Temporal (SQLite persistence)
+      + Temporal UI only (no MinIO yet — nothing needs blobs at this
       phase); Ollama itself can run natively on the host (GPU access)
       instead of in Compose — just needs to be reachable at
       OLLAMA_HOST — files: `deploy/docker-compose.yml` — depends: none
@@ -73,18 +73,19 @@ top of it.
       client — files: `internal/workflow/activities.go` — depends: T2.1
 
 ## Phase 3: First real task — notes
-- [ ] T3.1 `internal/store`: Postgres `TaskStore` (tasks + task_events)
-      and `NoteStore` (notes CRUD), migrations — files:
-      `internal/store/task_store.go`, `internal/store/note_store.go`,
-      `deploy/migrations/*.sql` — depends: T1.2
+- [ ] T3.1 `internal/store`: SQLite `TaskStore` (tasks + task_events)
+      and `NoteStore` (notes CRUD), embedded `schema.sql` applied on
+      startup — files: `internal/store/task_store.go`,
+      `internal/store/note_store.go`, `internal/store/schema.sql` —
+      depends: T1.2
 - [ ] T3.2 Wire `create_note`/`edit_note`/`delete_note` into
       `RunTaskActionActivity`'s dispatch table, replacing the stub for
       those commands; workflow persists `TaskEvent`s via `TaskStore` —
       files: `internal/workflow/activities.go` — depends: T3.1, T1.5
 
 ## Phase 4: Digests (parallel batch once schedules + skeleton exist)
-- [ ] T4.1 `internal/store`: `DigestStateStore` (Postgres, source →
-      state jsonb) — files: `internal/store/digest_state_store.go` —
+- [ ] T4.1 `internal/store`: `DigestStateStore` (SQLite, source →
+      state json) — files: `internal/store/digest_state_store.go` —
       depends: T1.2
 - [ ] T4.2 `cmd/bootstrap`: one-shot, creates/updates the 4 Temporal
       Schedules, each starting `AgentLoopWorkflow` with a fixed initial

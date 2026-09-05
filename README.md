@@ -46,7 +46,7 @@ Self-hosted, written in Go, orchestrated by an LLM agent loop:
   clarifying question, run the task, decide it's done, or redo it.
 - A hosted email API handles send/receive (deliverability, DKIM, spam
   filtering) — everything else runs on infra I own.
-- **Postgres** for tasks, notes, and digest state; **MinIO** for raw
+- **SQLite** for tasks, notes, and digest state; **MinIO** for raw
   mail/attachments.
 - No API Gateway, no AWS — a single Docker Compose stack.
 
