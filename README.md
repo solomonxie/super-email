@@ -20,32 +20,35 @@ links — no app to install, no website to log into.
 
 ## How it works
 
-Send an email, get something done. Subject line is the command, body
-is the content:
+Send an email, get something done — no fixed subject-line syntax. An
+LLM agent reads the email and decides what you mean: ask a follow-up
+question if it's unclear, do the task, or redo it if the result isn't
+good enough.
 
 ```
-To:      note@inbox.example.com
+To:      me@inbox.example.com
 Subject: A link worth keeping
 Body:    https://example.com/some-article
 ```
 
-No recognized command? The email is just saved as a note — nothing is
-ever silently dropped.
+Can't tell what you meant? It's saved as a note — nothing is ever
+silently dropped.
 
-Full command reference lives in [DESIGN.md: Email command grammar](./DESIGN.md#5-email-command-grammar).
+See [DESIGN.md: the agent loop](./DESIGN.md#4-the-agent-loop) for how
+that decision loop works.
 
 ## Under the hood
 
-Serverless, on AWS, written in Go:
+Self-hosted, written in Go, orchestrated by an LLM agent loop:
 
-- **AWS Lambda** (Go binaries, zip-deployed — no Docker, no container
-  registry) for every handler — email routing and each digest.
-- **Amazon SES** for receiving and sending mail.
-- **Amazon S3** as the only datastore — notes and digest state, no
-  database.
-- **Amazon EventBridge Scheduler** to trigger the daily digests.
-- **Terraform** for all infrastructure, no console clicking.
-- No API Gateway, no public endpoint of any kind — email in, email out.
+- Each request (an inbound email, or a scheduled digest tick) becomes
+  one **Temporal** workflow run — the agent loop itself: ask a
+  clarifying question, run the task, decide it's done, or redo it.
+- A hosted email API handles send/receive (deliverability, DKIM, spam
+  filtering) — everything else runs on infra I own.
+- **Postgres** for tasks, notes, and digest state; **MinIO** for raw
+  mail/attachments.
+- No API Gateway, no AWS — a single Docker Compose stack.
 
 See [DESIGN.md](./DESIGN.md) for the architecture diagram, data model,
 and per-feature notes.
