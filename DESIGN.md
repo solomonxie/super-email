@@ -28,7 +28,7 @@ edge runs on infra I own.
 flowchart LR
     ME[Me, any email provider] -->|send mail to| Provider[Hosted email API\ninbound route + outbound send]
     Provider -->|webhook POST, parsed email| Hook[inbound-webhook service]
-    Hook -->|start/signal| Temporal[Temporal Server\nself-hosted, Postgres-backed]
+    Hook -->|start/signal| Temporal[Temporal Server\nself-hosted, SQLite-backed]
 
     Cron[Temporal Schedules\n4 digest cron rules] -->|start| Temporal
 
@@ -39,7 +39,7 @@ flowchart LR
     Provider -->|deliver| ME
 
     Worker -->|fetch| Sources[Providers: Bible API,\nYouTube API, Meta Graph API,\nSubstack feed/sitemap]
-    Worker <-->|read/write| PG[(Postgres\ntasks, notes, digest state)]
+    Worker <-->|read/write| DB[(SQLite\ntasks, notes, digest state)]
     Worker <-->|blobs| Minio[(MinIO\nraw email + attachments)]
 ```
 
@@ -131,28 +131,34 @@ task logic or even the mail edge exists — see section 11.
 
 ## 5. Storage model
 
-**Decision: Postgres for structured state, MinIO for blobs, no S3.**
-Self-hosted relational DB is a better fit than hand-rolled
-read-modify-write JSON files once there's a real writer (Temporal
-workers) instead of one Lambda invocation at a time. MinIO gives an
-S3-compatible API for the one thing that's genuinely a blob (raw MIME
-+ attachments) without an AWS dependency.
+**Decision: SQLite for structured state (for now), MinIO for blobs, no
+S3.** Single writer (the worker process), personal scale — SQLite is
+one file, no server to run, no credentials to manage, and still beats
+hand-rolled read-modify-write JSON. MinIO gives an S3-compatible API
+for the one thing that's genuinely a blob (raw MIME + attachments)
+without an AWS dependency.
 
 ```
-Postgres
+SQLite (app.db)
   tasks            (id, thread_id, status, iteration_count, created_at, ...)
   task_events      (task_id, role: user|agent|system, content, created_at)  -- thread history
   notes            (id, type: note|link, content, url, tags, created_at)
-  digest_state     (source: bible|youtube|social|substack, state jsonb)     -- reading-plan day, seen-post ids, etc.
+  digest_state     (source: bible|youtube|social|substack, state json)     -- reading-plan day, seen-post ids, etc.
 
 MinIO
   raw-mail/<message-id>       -- original parsed payload from the provider, for audit/replay
   attachments/<message-id>/*  -- inbound attachments, if any
 ```
 
-One Postgres instance backs both the app schema above and Temporal's
-own persistence (separate databases on the same server) — one thing to
-run and back up, not two.
+Schema applied on startup (`CREATE TABLE IF NOT EXISTS`, embedded
+`schema.sql`) — no migration framework yet, not worth it at this size.
+
+Temporal keeps its own persistence, separately, using its built-in
+SQLite store (fine for single-node/solo use) — two SQLite files, not
+one, since Temporal owns its own schema. If SQLite's single-writer
+model ever becomes a bottleneck (concurrent workers, real multi-user
+load), the swap target is Postgres — that's why `internal/store` stays
+a plain repository interface, not raw SQL calls scattered around.
 
 ## 6. Digest pipelines
 
@@ -187,7 +193,7 @@ came back empty gets retried or escalated instead of mailing nothing).
 
 No HTTP surface for me to use, period — email (through the agent) is
 the only interface. Listing/searching notes, if wanted later, means
-querying Postgres directly (`psql` or a CLI) — no API Gateway, no
+querying the SQLite file directly (`sqlite3` CLI) — no API Gateway, no
 public endpoint, keeping the attack surface at "an inbox," not "an
 inbox plus a website."
 
@@ -203,7 +209,8 @@ inbox plus a website."
                         (interface + backend selection), ollama.go, openai.go
   workflow/              AgentLoopWorkflow + activity implementations
   mail/                  inbound webhook payload parsing, outbound send client
-  store/                 Postgres repos (TaskStore, NoteStore, DigestStateStore) + MinIO client
+  store/                 SQLite repos (TaskStore, NoteStore, DigestStateStore),
+                        embedded schema.sql, + MinIO client
   providers/
     bible/
     youtube/
@@ -212,9 +219,8 @@ inbox plus a website."
   model/                 Task, TaskEvent, Note, AgentDecision types
   config/                env var loading (.env for local, real env vars in deploy)
 /deploy
-  docker-compose.yml     temporal, temporal-postgresql, temporal-ui, postgres (app db),
-                          minio, inbound-webhook, worker
-  migrations/            Postgres schema migrations (app db)
+  docker-compose.yml     temporal (SQLite persistence), temporal-ui, minio,
+                          inbound-webhook, worker
 ```
 
 ## 9. Infra & security notes
@@ -224,11 +230,11 @@ inbox plus a website."
   key + webhook signing secret, LLM backend choice + OpenAI API key
   (only needed for that backend — the local Ollama backend needs no
   secret), YouTube API key +
-  channel IDs, Meta token, Substack publication list, Postgres/MinIO
-  credentials.
+  channel IDs, Meta token, Substack publication list, MinIO
+  credentials. SQLite needs none — it's just files on disk.
 - **Network exposure**: only `inbound-webhook` needs a public endpoint
   (reverse-proxied, TLS via e.g. Caddy/Let's Encrypt) — Temporal, the
-  worker, Postgres, and MinIO stay on the private/internal network.
+  worker, and MinIO stay on the private/internal network.
 - **Abuse guard**: webhook signature verification first, then
   `From`-allow-list check, before any workflow starts. Everything else
   is dropped, not bounced (don't confirm the address exists to a
@@ -239,8 +245,9 @@ inbox plus a website."
   scale, revisit if that stops being enough.
 - **Deployment**: Docker Compose on one self-hosted host (VPS or home
   server). No Terraform/AWS — `docker compose up -d` is the whole
-  deploy. Backups: pg_dump the Postgres volume on a cron, mirror the
-  MinIO bucket if it ever holds anything not reproducible from mail.
+  deploy. Backups: copy the SQLite files (app data + Temporal's own)
+  on a cron, mirror the MinIO bucket if it ever holds anything not
+  reproducible from mail.
 
 ## 10. Open questions / deferred
 
@@ -252,12 +259,14 @@ inbox plus a website."
   refresh flow exists.
 - Whether `task_events` needs its own retention/pruning once history
   gets long, independent of Temporal's own workflow-history size cap.
+- SQLite → Postgres migration if concurrent-writer load ever needs it
+  (section 5) — `internal/store` stays an interface for this reason.
 
 ## 11. Suggested build order
 
-1. Docker Compose bootstrap: Postgres, Temporal + Temporal UI (MinIO
-   waits until something needs blob storage). Prove the Temporal
-   server is reachable before writing any workflow.
+1. Docker Compose bootstrap: Temporal (SQLite persistence) + Temporal
+   UI (MinIO waits until something needs blob storage). Prove the
+   Temporal server is reachable before writing any workflow.
 2. `internal/agent` (Ollama backend first, OpenAI backend behind the
    same interface) + `AgentLoopWorkflow`
    with a **stub** `RunTaskAction` (logs command + params, returns a
