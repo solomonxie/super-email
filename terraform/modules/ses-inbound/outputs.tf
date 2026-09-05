@@ -13,3 +13,7 @@ output "mail_from_domain" {
 output "receipt_rule_set_name" {
   value = aws_ses_receipt_rule_set.this.rule_set_name
 }
+
+output "sns_topic_arn" {
+  value = aws_sns_topic.inbound.arn
+}
