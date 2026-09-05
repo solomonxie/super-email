@@ -1,5 +1,5 @@
-# Depends on: s3-data (bucket name/arn), lambda-container["email-router"]
-#   (function arn/name) — both passed in by envs/prod.
+# Depends on: s3-data (bucket name/arn) and ec2-host (webhook_url) —
+#   both passed in by envs/prod.
 # Depended on by: nothing (leaf of the graph on the inbound side).
 #
 # aws_ses_domain_identity ──┬─→ aws_ses_domain_dkim
@@ -8,11 +8,13 @@
 #
 # aws_s3_bucket_policy.allow_ses      (lets SES write raw MIME into the
 #                                       shared data bucket's raw-inbox/ prefix)
-# aws_ses_receipt_rule_set/rule       (recipients → s3_action, then lambda_action)
-# aws_lambda_permission.ses_invoke    (resource policy: SES may invoke the router)
+# aws_sns_topic.inbound ──→ aws_sns_topic_subscription.webhook (https,
+#                            delivers to inbound-webhook on the EC2 box)
+# aws_ses_receipt_rule_set/rule       (recipients → s3_action, then sns_action)
 #
 # DESIGN.md: receiving lives on an owned domain via SES; sending
-# (from any provider) is untouched — only inbound is AWS-native here.
+# (from the worker, via the EC2 instance role) is untouched — only
+# inbound is AWS-native here. No Lambda in this pipeline.
 
 resource "aws_ses_domain_identity" "this" {
   domain = var.domain_name
@@ -101,8 +103,38 @@ resource "aws_ses_active_receipt_rule_set" "this" {
   rule_set_name = aws_ses_receipt_rule_set.this.rule_set_name
 }
 
+resource "aws_sns_topic" "inbound" {
+  name = "${replace(var.domain_name, ".", "-")}-inbound"
+}
+
+resource "aws_sns_topic_policy" "allow_ses" {
+  arn = aws_sns_topic.inbound.arn
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "AllowSESPublish"
+      Effect    = "Allow"
+      Principal = { Service = "ses.amazonaws.com" }
+      Action    = "SNS:Publish"
+      Resource  = aws_sns_topic.inbound.arn
+      Condition = {
+        StringEquals = { "aws:SourceAccount" = var.account_id }
+      }
+    }]
+  })
+}
+
+# HTTPS delivery requires inbound-webhook to be reachable and to answer
+# SNS's subscription-confirmation handshake (a SubscribeURL GET) before
+# this subscription shows as confirmed — see terraform/README.md.
+resource "aws_sns_topic_subscription" "webhook" {
+  topic_arn = aws_sns_topic.inbound.arn
+  protocol  = "https"
+  endpoint  = var.webhook_url
+}
+
 resource "aws_ses_receipt_rule" "router" {
-  name          = "route-to-lambda"
+  name          = "route-to-webhook"
   rule_set_name = aws_ses_receipt_rule_set.this.rule_set_name
   recipients    = var.recipients
   enabled       = true
@@ -114,19 +146,10 @@ resource "aws_ses_receipt_rule" "router" {
     position          = 1
   }
 
-  lambda_action {
-    function_arn    = var.router_lambda_arn
-    invocation_type = "Event"
-    position        = 2
+  sns_action {
+    topic_arn = aws_sns_topic.inbound.arn
+    position  = 2
   }
 
-  depends_on = [aws_s3_bucket_policy.allow_ses, aws_lambda_permission.ses_invoke]
-}
-
-resource "aws_lambda_permission" "ses_invoke" {
-  statement_id   = "AllowSESInvoke"
-  action         = "lambda:InvokeFunction"
-  function_name  = var.router_lambda_name
-  principal      = "ses.amazonaws.com"
-  source_account = var.account_id
+  depends_on = [aws_s3_bucket_policy.allow_ses, aws_sns_topic_policy.allow_ses]
 }

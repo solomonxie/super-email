@@ -7,7 +7,9 @@
 #   └─ lifecycle rules: expire raw-inbox/ after 30d, prune old versions after 90d
 #
 # Single bucket, prefix-partitioned per DESIGN.md — no per-feature
-# buckets, keeps IAM/lifecycle rules in one place.
+# buckets, keeps IAM/lifecycle rules in one place. Prefixes:
+# raw-inbox/ (expires below), attachments/ (no lifecycle rule — kept
+# indefinitely, unlike the raw MIME copy).
 
 resource "aws_s3_bucket" "data" {
   bucket = var.bucket_name

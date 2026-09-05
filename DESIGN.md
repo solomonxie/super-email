@@ -2,8 +2,10 @@
 
 Personal self-hosted backend, in Go, that turns email into an agent
 you talk to over a thread. Built to practice Go, Temporal, and running
-an LLM agent loop. No AWS, no serverless — everything but the mail
-edge runs on infra I own.
+an LLM agent loop. No serverless (Lambda/EventBridge) — compute is one
+long-running box (Temporal + worker via Docker Compose) on EC2;
+Terraform manages that box plus S3 and SES, the only managed AWS
+services in the design.
 
 ## 1. Goals
 
@@ -16,9 +18,11 @@ edge runs on infra I own.
   digests (Bible reading, YouTube, Facebook/Instagram, Substack
   refresher) are just scheduled instances of that same agent loop.
 - A notes/links inbox: capture, edit, delete — the agent's simplest task.
-- Self-hosted compute, database, and orchestration (one box I control).
-  Only the mail edge (send/receive) is a hosted API — deliverability
-  and spam filtering are not worth self-hosting for one user.
+- Self-hosted compute, database, and orchestration (one EC2 box,
+  Terraform-provisioned, otherwise mine to administer). Only mail
+  send/receive (SES) and blob storage (S3) are managed AWS services —
+  deliverability and spam filtering aren't worth self-hosting a mail
+  transfer agent for, at personal scale.
 - Optimize for "learn Temporal + agent-loop design" over "minimum
   services used" — but don't add a service without a job.
 
@@ -26,8 +30,10 @@ edge runs on infra I own.
 
 ```mermaid
 flowchart LR
-    ME[Me, any email provider] -->|send mail to| Provider[Hosted email API\ninbound route + outbound send]
-    Provider -->|webhook POST, parsed email| Hook[inbound-webhook service]
+    ME[Me, any email provider] -->|send mail to| SES[AWS SES\ninbound receipt + outbound send]
+    SES -->|raw MIME| S3raw[(S3 raw-inbox/)]
+    SES -->|notify| SNS[SNS topic]
+    SNS -->|HTTPS| Hook[inbound-webhook service]
     Hook -->|start/signal| Temporal[Temporal Server\nself-hosted, SQLite-backed]
 
     Cron[Temporal Schedules\n4 digest cron rules] -->|start| Temporal
@@ -35,13 +41,19 @@ flowchart LR
     Temporal <-->|poll task queue| Worker[Worker process\nAgentLoopWorkflow + activities]
 
     Worker -->|CallAgent| LLM[LLM backend\nOllama local, or OpenAI API]
-    Worker -->|SendEmail| Provider
-    Provider -->|deliver| ME
+    Worker -->|SendEmail| SES
+    SES -->|deliver| ME
 
     Worker -->|fetch| Sources[Providers: Bible API,\nYouTube API, Meta Graph API,\nSubstack feed/sitemap]
     Worker <-->|read/write| DB[(SQLite\ntasks, notes, digest state)]
-    Worker <-->|blobs| Minio[(MinIO\nraw email + attachments)]
+    Worker <-->|blobs| S3[(S3\nraw email + attachments)]
 ```
+
+Compute (Temporal + worker + inbound-webhook, via Docker Compose) runs
+on one EC2 instance; S3 and SES are AWS-managed, everything else is
+self-hosted on that box. Terraform (`terraform/`) provisions the EC2
+instance, S3 bucket, and SES/SNS plumbing — it does not build or
+deploy the Go app itself (see §9).
 
 Every request — an inbound email or a scheduled digest tick — becomes
 one `AgentLoopWorkflow` execution in Temporal. The workflow *is* the
@@ -51,29 +63,34 @@ special-cased plumbing, they're what the workflow does natively.
 
 ## 3. Mail edge
 
-**Decision: hosted email API for send + inbound webhook, self-hosted
-for everything else.** SES/Mailgun/Postmark-class providers solve
-deliverability, DKIM, and spam filtering — none of that is worth
-self-hosting a mail transfer agent for, at personal scale, when the
-whole point of this project is Temporal and the agent loop, not mail
-server administration.
+**Decision: AWS SES for send + inbound, self-hosted for everything
+else.** SES solves deliverability, DKIM, and spam filtering — none of
+that is worth self-hosting a mail transfer agent for, at personal
+scale, when the whole point of this project is Temporal and the agent
+loop, not mail server administration. Terraform manages SES alongside
+the EC2 host and S3 bucket (`terraform/`), so mail plumbing and compute
+are provisioned together.
 
 Flow:
-1. Provider inbound route matches `me@inbox.mydomain.com` (and
-   friendlier aliases), parses the MIME for me, and POSTs the parsed
-   result (from, subject, text/HTML body, thread/message id,
-   attachments) to `inbound-webhook`'s public URL.
-2. `inbound-webhook`:
-   - Verifies the provider's webhook signature.
+1. An SES receipt rule matches `me@inbox.mydomain.com` (and friendlier
+   aliases), writes the raw MIME to S3 (`raw-inbox/`), and publishes a
+   notification to an SNS topic.
+2. The SNS topic has an HTTPS subscription pointed at
+   `inbound-webhook`'s public URL (the one public endpoint in this
+   design, reverse-proxied with TLS via Caddy). `inbound-webhook`:
+   - Verifies the SNS message signature.
+   - Fetches and parses the raw MIME from S3 using the notification's
+     object key.
    - Verifies `From` is my allow-listed address — hard requirement,
      since the webhook URL is otherwise open to anyone who finds it.
      Anything else is dropped and logged, no reply sent.
-   - Resolves a thread id (provider's thread/message-id headers, or a
-     tag in the recipient address) and either starts a new
-     `AgentLoopWorkflow` or sends it an `EmailReceived` signal if one
-     is already running for that thread.
-3. Outbound (agent replies + digests) goes through the same provider's
-   send API, called from the `SendEmail` activity.
+   - Resolves a thread id (message-id/references headers, or a tag in
+     the recipient address) and either starts a new `AgentLoopWorkflow`
+     or sends it an `EmailReceived` signal if one is already running
+     for that thread.
+3. Outbound (agent replies + digests) goes through SES's send API
+   (`SendEmail`/`SendRawEmail`), called from the `SendEmail` activity
+   using the EC2 instance's IAM role — no static credentials to manage.
 
 ## 4. The agent loop
 
@@ -131,12 +148,13 @@ task logic or even the mail edge exists — see section 11.
 
 ## 5. Storage model
 
-**Decision: SQLite for structured state (for now), MinIO for blobs, no
-S3.** Single writer (the worker process), personal scale — SQLite is
-one file, no server to run, no credentials to manage, and still beats
-hand-rolled read-modify-write JSON. MinIO gives an S3-compatible API
-for the one thing that's genuinely a blob (raw MIME + attachments)
-without an AWS dependency.
+**Decision: SQLite for structured state (for now), S3 for blobs.**
+Single writer (the worker process), personal scale — SQLite is one
+file, no server to run, no credentials to manage, and still beats
+hand-rolled read-modify-write JSON. S3 (Terraform-managed, one bucket)
+holds the one thing that's genuinely a blob: raw MIME + attachments.
+The EC2 instance role has read/write IAM permissions on the bucket —
+no static credentials, same as SES.
 
 ```
 SQLite (app.db)
@@ -145,9 +163,9 @@ SQLite (app.db)
   notes            (id, type: note|link, content, url, tags, created_at)
   digest_state     (source: bible|youtube|social|substack, state json)     -- reading-plan day, seen-post ids, etc.
 
-MinIO
-  raw-mail/<message-id>       -- original parsed payload from the provider, for audit/replay
-  attachments/<message-id>/*  -- inbound attachments, if any
+S3 (one bucket, prefix-partitioned)
+  raw-inbox/<message-id>      -- original raw MIME from SES, 30d lifecycle expiry
+  attachments/<message-id>/*  -- inbound attachments, if any, kept indefinitely
 ```
 
 Schema applied on startup (`CREATE TABLE IF NOT EXISTS`, embedded
@@ -210,7 +228,7 @@ inbox plus a website."
   workflow/              AgentLoopWorkflow + activity implementations
   mail/                  inbound webhook payload parsing, outbound send client
   store/                 SQLite repos (TaskStore, NoteStore, DigestStateStore),
-                        embedded schema.sql, + MinIO client
+                        embedded schema.sql, + S3 client
   providers/
     bible/
     youtube/
@@ -219,23 +237,25 @@ inbox plus a website."
   model/                 Task, TaskEvent, Note, AgentDecision types
   config/                env var loading (.env for local, real env vars in deploy)
 /deploy
-  docker-compose.yml     temporal (SQLite persistence), temporal-ui, minio,
+  docker-compose.yml     temporal (SQLite persistence), temporal-ui,
                           inbound-webhook, worker
 ```
 
 ## 9. Infra & security notes
 
 - **Secrets/config**: env vars (`.env` locally, injected by the deploy
-  host otherwise) — allow-listed sender address, mail provider API
-  key + webhook signing secret, LLM backend choice + OpenAI API key
-  (only needed for that backend — the local Ollama backend needs no
-  secret), YouTube API key +
-  channel IDs, Meta token, Substack publication list, MinIO
-  credentials. SQLite needs none — it's just files on disk.
+  host otherwise) — allow-listed sender address, LLM backend choice +
+  OpenAI API key (only needed for that backend — the local Ollama
+  backend needs no secret), YouTube API key + channel IDs, Meta token,
+  Substack publication list. No SES/S3 credentials to manage — the EC2
+  instance role grants both via IAM. SQLite needs none either — it's
+  just files on disk.
 - **Network exposure**: only `inbound-webhook` needs a public endpoint
-  (reverse-proxied, TLS via e.g. Caddy/Let's Encrypt) — Temporal, the
-  worker, and MinIO stay on the private/internal network.
-- **Abuse guard**: webhook signature verification first, then
+  (reverse-proxied, TLS via Caddy/Let's Encrypt) — Temporal, the
+  worker, and SQLite stay on the box's internal network. SES delivers
+  to that endpoint via an SNS HTTPS subscription (§3), not a public
+  API Gateway.
+- **Abuse guard**: SNS signature verification first, then
   `From`-allow-list check, before any workflow starts. Everything else
   is dropped, not bounced (don't confirm the address exists to a
   spammer).
@@ -243,11 +263,14 @@ inbox plus a website."
   gives workflow-level visibility (stuck tasks, failed activities,
   retry history) for free — no separate alerting system needed at this
   scale, revisit if that stops being enough.
-- **Deployment**: Docker Compose on one self-hosted host (VPS or home
-  server). No Terraform/AWS — `docker compose up -d` is the whole
-  deploy. Backups: copy the SQLite files (app data + Temporal's own)
-  on a cron, mirror the MinIO bucket if it ever holds anything not
-  reproducible from mail.
+- **Deployment**: two layers. Terraform (`terraform/`) provisions the
+  EC2 instance, S3 bucket, and SES/SNS plumbing — infra only, it
+  doesn't build or push the Go app. On top of that, Docker Compose is
+  the app deploy: ssh onto the instance, `docker compose up -d`
+  (`deploy/docker-compose.yml`), same as it would be on a hand-made VPS
+  or home server. Backups: copy the SQLite files (app data + Temporal's
+  own) on a cron; S3 already has its own versioning/lifecycle rules
+  (`terraform/modules/s3-data`).
 
 ## 10. Open questions / deferred
 
@@ -265,8 +288,9 @@ inbox plus a website."
 ## 11. Suggested build order
 
 1. Docker Compose bootstrap: Temporal (SQLite persistence) + Temporal
-   UI (MinIO waits until something needs blob storage). Prove the
-   Temporal server is reachable before writing any workflow.
+   UI (S3 wiring waits until something needs blob storage — it's a
+   managed service, not a compose container). Prove the Temporal
+   server is reachable before writing any workflow.
 2. `internal/agent` (Ollama backend first, OpenAI backend behind the
    same interface) + `AgentLoopWorkflow`
    with a **stub** `RunTaskAction` (logs command + params, returns a

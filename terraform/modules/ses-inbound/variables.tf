@@ -30,10 +30,7 @@ variable "data_bucket_arn" {
   type = string
 }
 
-variable "router_lambda_arn" {
-  type = string
-}
-
-variable "router_lambda_name" {
-  type = string
+variable "webhook_url" {
+  type        = string
+  description = "HTTPS URL of the inbound-webhook endpoint the SNS notification is delivered to, e.g. https://hooks.inbox.example.com/ses-inbound."
 }

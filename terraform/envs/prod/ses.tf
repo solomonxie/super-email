@@ -1,4 +1,4 @@
-# Depends on: s3.tf (bucket name/arn), lambdas.tf (module.lambdas["email-router"]),
+# Depends on: s3.tf (bucket name/arn), ec2.tf (module.app_host.webhook_fqdn),
 #   data.tf, variables.tf.
 # Depended on by: outputs.tf.
 
@@ -18,6 +18,5 @@ module "ses_inbound" {
   data_bucket_name = module.data_bucket.bucket_name
   data_bucket_arn  = module.data_bucket.bucket_arn
 
-  router_lambda_arn  = module.lambdas["email-router"].function_arn
-  router_lambda_name = module.lambdas["email-router"].function_name
+  webhook_url = "https://${module.app_host.webhook_fqdn}/ses-inbound"
 }

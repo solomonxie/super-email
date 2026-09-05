@@ -9,10 +9,12 @@ task execution, no mail edge, no notes, no digests — before wiring any
 real task. That's Phase 1.
 
 ## Phase 0: Remove the old serverless scaffolding
-- [ ] T0.1 Delete `terraform/` (AWS/Lambda infra, superseded by
-      `deploy/docker-compose.yml`) and the 5 placeholder
-      `cmd/{email-router,digest-*}/main.go` — files: `terraform/**`,
-      `cmd/email-router/`, `cmd/digest-*/` — depends: none
+- [ ] T0.1 Rewrite `terraform/` for EC2 + S3 + SES (drop the Lambda +
+      EventBridge Scheduler modules — compute is one Docker-Compose box,
+      digests are Temporal Schedules, not cron-invoked Lambdas — done)
+      and delete the 5 placeholder `cmd/{email-router,digest-*}/main.go`
+      (outstanding) — files: `terraform/**`, `cmd/email-router/`,
+      `cmd/digest-*/` — depends: none
 - [ ] T0.2 Rewrite `cmd/README.md` and `terraform/README.md` (delete
       the latter) for the new layout once T0.1 and T1.* land — files:
       `cmd/README.md`, `terraform/README.md` — depends: T0.1, T1.2

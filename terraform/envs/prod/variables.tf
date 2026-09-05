@@ -27,12 +27,27 @@ variable "route53_zone_id" {
   description = "Route53 zone id for ses_domain's parent zone, if managed there. Leave null to set up DNS manually."
 }
 
-variable "allowed_sender_email" {
-  type        = string
-  description = "Only mail From this address is processed by email-router; everything else is dropped."
+variable "ec2_instance_type" {
+  type    = string
+  default = "t3.micro"
 }
 
-variable "log_retention_days" {
+variable "ec2_ssh_public_key" {
+  type        = string
+  description = "Contents of an SSH public key (e.g. contents of ~/.ssh/id_ed25519.pub) to allow onto the host."
+}
+
+variable "ssh_allowed_cidr" {
+  type        = string
+  description = "CIDR allowed to SSH into the host, e.g. \"1.2.3.4/32\"."
+}
+
+variable "webhook_subdomain" {
+  type    = string
+  default = "hooks"
+}
+
+variable "root_volume_size_gb" {
   type    = number
-  default = 14
+  default = 20
 }
