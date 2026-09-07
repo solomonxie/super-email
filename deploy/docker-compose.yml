@@ -1,0 +1,31 @@
+# Temporal server + UI, backed by its own SQLite file (see DESIGN.md
+# §2, §5). This is the whole "orchestration" tier for now — the worker
+# (cmd/worker) and later inbound-webhook run alongside it as their own
+# services once T1.6/T2.2 land; not added yet since there's nothing for
+# them to do until then.
+#
+# `temporal server start-dev` is Temporal's own single-binary dev/personal
+# server: SQLite persistence + built-in Web UI, no Cassandra/Postgres/
+# Elasticsearch to run alongside it — the right fit for one EC2 box.
+services:
+  temporal:
+    image: temporalio/admin-tools:1.29.7-tctl-1.18.4-cli-1.7.2
+    entrypoint: []
+    command:
+      - temporal
+      - server
+      - start-dev
+      - --ip=0.0.0.0
+      - --port=7233
+      - --ui-ip=0.0.0.0
+      - --ui-port=8233
+      - --db-filename=/data/temporal.db
+    ports:
+      - "7233:7233" # frontend gRPC — worker/client connect here
+      - "8233:8233" # Temporal Web UI
+    volumes:
+      - temporal-data:/data
+    restart: unless-stopped
+
+volumes:
+  temporal-data:
