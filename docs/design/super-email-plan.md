@@ -9,31 +9,32 @@ task execution, no mail edge, no notes, no digests — before wiring any
 real task. That's Phase 1.
 
 ## Phase 0: Remove the old serverless scaffolding
-- [ ] T0.1 Rewrite `terraform/` for EC2 + S3 + SES (drop the Lambda +
+- [x] T0.1 Rewrite `terraform/` for EC2 + S3 + SES (drop the Lambda +
       EventBridge Scheduler modules — compute is one Docker-Compose box,
       digests are Temporal Schedules, not cron-invoked Lambdas — done)
       and delete the 5 placeholder `cmd/{email-router,digest-*}/main.go`
       (outstanding) — files: `terraform/**`, `cmd/email-router/`,
       `cmd/digest-*/` — depends: none
-- [ ] T0.2 Rewrite `cmd/README.md` and `terraform/README.md` (delete
-      the latter) for the new layout once T0.1 and T1.* land — files:
-      `cmd/README.md`, `terraform/README.md` — depends: T0.1, T1.2
+- [x] T0.2 Rewrite `cmd/README.md` for the new layout (`terraform/README.md`
+      already reflected the new design from T0.1's commit — reread, it
+      didn't need a rewrite/deletion after all) — files: `cmd/README.md`
+      — depends: T0.1, T1.2
 
 ## Phase 1: Bare agent loop (stub execution, no mail/tasks yet)
-- [ ] T1.1 `deploy/docker-compose.yml`: Temporal (SQLite persistence)
+- [x] T1.1 `deploy/docker-compose.yml`: Temporal (SQLite persistence)
       + Temporal UI only (no MinIO yet — nothing needs blobs at this
       phase); Ollama itself can run natively on the host (GPU access)
       instead of in Compose — just needs to be reachable at
       OLLAMA_HOST — files: `deploy/docker-compose.yml` — depends: none
-- [ ] T1.2 `internal/model`: `Task`, `TaskEvent` (role: user\|agent\|system,
+- [x] T1.2 `internal/model`: `Task`, `TaskEvent` (role: user\|agent\|system,
       content), `AgentDecision` (type: ask_user\|execute\|finish\|rework,
       question/command/params/message) — files: `internal/model/task.go`,
       `internal/model/decision.go` — depends: none
-- [ ] T1.3 `internal/config`: env var loading (LLM_PROVIDER=ollama\|openai
+- [x] T1.3 `internal/config`: env var loading (LLM_PROVIDER=ollama\|openai
       — default `ollama` for now, OLLAMA_HOST/OLLAMA_MODEL, OPENAI_API_KEY,
       Temporal address, max iterations, ask_user timeout) — files:
       `internal/config/config.go` — depends: none
-- [ ] T1.4 `internal/agent`: `Client` interface —
+- [x] T1.4 `internal/agent`: `Client` interface —
       `Decide(ctx, []TaskEvent) (AgentDecision, error)` — with
       `ollama.go` (local HTTP API, build/test against this first) and
       `openai.go` (API-key backend), selected via config; shared
@@ -41,22 +42,29 @@ real task. That's Phase 1.
       must name a command + params — files: `internal/agent/client.go`,
       `internal/agent/ollama.go`, `internal/agent/openai.go` —
       depends: T1.2, T1.3
-- [ ] T1.5 `internal/workflow`: `AgentLoopWorkflow` + activities
+- [x] T1.5 `internal/workflow`: `AgentLoopWorkflow` + activities
       (`CallAgentActivity` wraps T1.4; `RunTaskActionActivity` is a
       dispatch table with one **stub** entry that logs the exact
       command + params and returns a canned result;
       `SendEmailActivity` is a **stub** that logs to stdout) — files:
       `internal/workflow/agent_loop.go`, `internal/workflow/activities.go`
       — depends: T1.2, T1.4
-- [ ] T1.6 `cmd/worker`: registers `AgentLoopWorkflow` + activities on
+- [x] T1.6 `cmd/worker`: registers `AgentLoopWorkflow` + activities on
       the task queue — files: `cmd/worker/main.go` — depends: T1.5
-- [ ] T1.7 Manual test pass using Temporal's own CLI (no bespoke
+- [~] T1.7 Manual test pass using Temporal's own CLI (no bespoke
       harness needed): `temporal workflow start` with a task
       description, `temporal workflow signal` to simulate a user
       reply, `temporal workflow show`/Temporal UI to read the decision
       trail and confirm ask/execute/finish/rework all fire correctly,
       the iteration cap holds, and the `ask_user` timeout closes the
-      task — files: none (verification task) — depends: T1.1, T1.6
+      task — files: none (verification task) — depends: T1.1, T1.6.
+      **Substituted for now**: no `docker`/`temporal` CLI in this dev
+      environment, so `internal/workflow/agent_loop_test.go` covers the
+      same checklist against Temporal's `testsuite` package instead
+      (ask_user/execute/finish/rework, iteration cap, ask_user timeout —
+      all pass). Still do the real CLI pass once this runs somewhere
+      with Docker (e.g. the EC2 box) before trusting it against a live
+      server.
 
 **Gate: don't start Phase 2 until T1.7 passes** — the loop must be
 provably correct against stub output before real mail or tasks sit on
